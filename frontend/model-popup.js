@@ -1,33 +1,20 @@
-// ===================== POPUP MODEL + MỨC SUY LUẬN (kiểu ChatGPT) =====================
+// ===================== POPUP MODEL + BẬT/TẮT THINKING =====================
 // Nạp SAU app.js. Dùng lại các thứ app.js đã có: state, els, MODEL_OPTIONS, modelSheet, modelBackdrop,
 // renderModelSheet(), openSheet(), closeSheet() — nên không phải sửa app.js.
 //
 // Cách hoạt động:
-//  - Bấm tên model ở ô nhập -> mở popup này (thay cho popup chọn model cũ).
-//  - Góc trên trái: tia sét "Deep Think". Rỗng = TẮT Deep Think, tô màu = BẬT Deep Think.
-//  - Giữa: tên model, bấm vào để đổi model (mở lại popup chọn model cũ, đã bỏ phần Thinking).
+//  - Bấm tên model ở ô nhập -> mở popup này.
+//  - Góc trên trái: tia sét. Rỗng = TẮT thinking, tô màu = BẬT thinking.
+//  - Giữa: tên model, bấm vào để đổi model.
 //  - Góc trên phải: nút X đóng popup.
-//  - Dưới cùng: thanh gạt Thấp / Trung bình / Cao. Thanh luôn sáng; gạt thanh CHỈ đổi mức nỗ lực,
-//    KHÔNG tự bật/tắt Deep Think (chỉ nút tia sét mới bật/tắt).
-//  - Mức đã chọn gửi lên server qua trường `thinkingEffort` của /api/chat/stream.
+//  - Không còn thanh mức nỗ lực.
 (() => {
   'use strict';
-
-  const LEVELS = [
-    { key: 'low', label: 'Thấp' },
-    { key: 'medium', label: 'Trung bình' },
-    { key: 'high', label: 'Cao' },
-  ];
-  const EFFORT_KEY = 'myai_thinking_effort';
-  const DEEP_THINK_LABEL = 'Deep Think';
-
-  let effort = localStorage.getItem(EFFORT_KEY);
-  if (!LEVELS.some(l => l.key === effort)) effort = 'medium';
 
   const BOLT_PATH = 'M13 2 4.5 13.5H11L10 22l9-12h-6.5z';
   const boltSvg = (cls) => `<svg class="${cls}" viewBox="0 0 24 24" aria-hidden="true"><path d="${BOLT_PATH}"/></svg>`;
 
-  // ---------- dựng popup (không cần sửa index.html ngoài 2 thẻ nạp file) ----------
+  // ---------- dựng popup ----------
   const backdrop = document.createElement('div');
   backdrop.className = 'sheet-backdrop hidden';
   backdrop.id = 'effortBackdrop';
@@ -36,11 +23,11 @@
   sheet.className = 'sheet effort-sheet';
   sheet.id = 'effortSheet';
   sheet.setAttribute('role', 'dialog');
-  sheet.setAttribute('aria-label', 'Model và mức suy luận');
+  sheet.setAttribute('aria-label', 'Model và thinking');
   sheet.innerHTML = `
     <div class="sheet-handle"></div>
     <div class="effort-header">
-      <button type="button" class="effort-bolt" id="effortBolt" aria-pressed="false" aria-label="Bật hoặc tắt ${DEEP_THINK_LABEL}" title="${DEEP_THINK_LABEL}">${boltSvg('')}</button>
+      <button type="button" class="effort-bolt" id="effortBolt" aria-pressed="false" aria-label="Bật hoặc tắt thinking" title="Thinking">${boltSvg('')}</button>
       <button type="button" class="effort-model" id="effortModelBtn" aria-label="Đổi model">
         <span id="effortModelName"></span>
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
@@ -48,20 +35,12 @@
       <button type="button" class="effort-close" id="effortClose" aria-label="Đóng">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
       </button>
-    </div>
-    <div class="effort-body" id="effortBody">
-      <div class="effort-title">Mức nỗ lực</div>
-      <input type="range" class="effort-range" id="effortRange" min="0" max="2" step="1" aria-label="Mức nỗ lực suy luận" />
-      <div class="effort-stops" id="effortStops">
-        ${LEVELS.map((l, i) => `<button type="button" class="effort-stop" data-i="${i}">${l.label}</button>`).join('')}
-      </div>
     </div>`;
   document.body.append(backdrop, sheet);
 
   const boltBtn = sheet.querySelector('#effortBolt');
   const modelBtn = sheet.querySelector('#effortModelBtn');
   const modelName = sheet.querySelector('#effortModelName');
-  const range = sheet.querySelector('#effortRange');
 
   // ---------- trạng thái ----------
   function currentModel() {
@@ -71,17 +50,12 @@
 
   function refresh() {
     const on = !!state.thinking;
-    const idx = Math.max(0, LEVELS.findIndex(l => l.key === effort));
     boltBtn.classList.toggle('on', on);
     boltBtn.setAttribute('aria-pressed', String(on));
-    // Thanh nỗ lực luôn sáng, không làm mờ khi Deep Think đang tắt.
-    range.value = String(idx);
-    range.style.setProperty('--pct', (idx * 50) + '%');
-    sheet.querySelectorAll('.effort-stop').forEach((b, i) => b.classList.toggle('active', i === idx));
-    modelName.textContent = currentModel().label.replace(/^\u26A1\uFE0F?\s*/u, '') || currentModel().label; // bỏ emoji tia sét của nhãn "Auto"
+    modelName.textContent = currentModel().label.replace(/^\u26A1\uFE0F?\s*/u, '') || currentModel().label;
   }
 
-  // Bật/tắt Deep Think thông qua công tắc cũ (đang ẩn) để app.js tự lưu state + localStorage như trước.
+  // Bật/tắt thinking thông qua công tắc cũ (đang ẩn) để app.js tự lưu state + localStorage như trước.
   function setThinking(on) {
     const t = els.thinkingToggle;
     if (t.checked !== on) {
@@ -91,23 +65,14 @@
     refresh();
   }
 
-  // Gạt thanh chỉ đổi mức nỗ lực, KHÔNG đụng tới trạng thái bật/tắt Deep Think.
-  function setEffort(i) {
-    effort = LEVELS[Math.min(2, Math.max(0, i))].key;
-    localStorage.setItem(EFFORT_KEY, effort);
-    refresh();
-  }
-
   // ---------- sự kiện ----------
   boltBtn.addEventListener('click', () => setThinking(!state.thinking));
-  range.addEventListener('input', () => setEffort(parseInt(range.value, 10)));
-  sheet.querySelectorAll('.effort-stop').forEach(b => b.addEventListener('click', () => setEffort(parseInt(b.dataset.i, 10))));
 
   const close = () => closeSheet(sheet, backdrop);
   sheet.querySelector('#effortClose').addEventListener('click', close);
   backdrop.addEventListener('click', close);
 
-  // Bấm tên model trong popup -> đóng popup này, mở popup chọn model cũ.
+  // Bấm tên model trong popup -> đóng popup này, mở popup chọn model.
   modelBtn.addEventListener('click', () => {
     close();
     renderModelSheet();
@@ -125,7 +90,7 @@
   }, true);
 
   // ---------- nối với app.js (không sửa app.js) ----------
-  // 1) Nhãn trên nút model: icon tia sét tô màu khi đang bật Deep Think.
+  // Nhãn trên nút model: icon tia sét tô màu khi đang bật thinking.
   window.updateModelPillLabel = function () {
     const m = currentModel();
     const lbl = els.modelPillLabel;
@@ -135,21 +100,12 @@
     refresh();
   };
 
-  // 2) Gửi kèm mức nỗ lực khi chat có bật Deep Think.
-  const origStreamPost = window.streamPost;
-  window.streamPost = function (url, payload, handlers, abortSignal) {
-    if (payload && payload.thinking && typeof url === 'string' && url.includes('/api/chat/stream')) {
-      payload = { ...payload, thinkingEffort: effort };
-    }
-    return origStreamPost.call(this, url, payload, handlers, abortSignal);
-  };
-
   window.updateModelPillLabel(); // đồng bộ nhãn ngay khi tải trang
 })();
 
-// ===================== GEMMA 4 (thêm mới) =====================
+// ===================== GEMMA 4 =====================
 // Chỉ thay: danh sách model + system prompt. Mọi thứ khác (worker dùng chung my-ai-worker, tìm web,
-// Deep Think, lưu hội thoại...) giữ nguyên như bản gốc.
+// thinking, lưu hội thoại...) giữ nguyên như bản gốc.
 (() => {
   'use strict';
 
@@ -184,7 +140,7 @@
     return parts.join('\n');
   }
 
-  // Bọc streamPost một lần nữa (ngoài lớp thêm thinkingEffort ở trên): thay system prompt cũ bằng prompt mới.
+  // Bọc streamPost: thay system prompt cũ bằng prompt mới.
   const prevStreamPost = window.streamPost;
   window.streamPost = function (url, payload, handlers, abortSignal) {
     if (payload && typeof url === 'string' && url.includes('/api/chat/stream')) {
