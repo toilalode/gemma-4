@@ -104,8 +104,8 @@
 })();
 
 // ===================== GEMMA 4 =====================
-// Chỉ thay: danh sách model + Auto + system prompt + Nano Banana Lite. Mọi thứ khác (worker dùng chung
-// my-ai-worker, tìm web, thinking, lưu hội thoại...) giữ nguyên như bản gốc.
+// Chỉ thay: danh sách model + Auto + system prompt + Nano Banana Lite + model của API key. Mọi thứ khác
+// (worker dùng chung my-ai-worker, tìm web, thinking, lưu hội thoại...) giữ nguyên như bản gốc.
 (() => {
   'use strict';
 
@@ -185,6 +185,26 @@
     }
     return prevStreamPost.call(this, url, payload, handlers, abortSignal);
   };
+
+  // ---------- Cài đặt > "Thử gọi API bằng key": thay 4 model cũ bằng Auto, 2 model Gemma, thinking ----------
+  // Worker (entry.js) nhận 4 giá trị này cho /api/external/chat.
+  const apiSel = document.getElementById('apiKeyTestModel');
+  if (apiSel) {
+    apiSel.innerHTML =
+      '<option value="auto">Auto (tự chọn 31B / 26B)</option>' +
+      '<option value="gemma-4-31b-it">Gemma 4 31B</option>' +
+      '<option value="gemma-4-26b-a4b-it">Gemma 4 26B A4B</option>' +
+      '<option value="thinking">Gemma 4 31B + bật thinking</option>' +
+      // Option "coding" ẩn: app.js thấy đã có thì không chèn thêm lựa chọn Coding cho chủ app.
+      '<option value="coding" hidden disabled></option>';
+    apiSel.value = 'auto';
+  }
+  // Sửa dòng chú thích model trong đoạn code xuất ra (app.js tạo sẵn, nhắc 3 model cũ).
+  document.getElementById('apiKeyGenSnippetBtn')?.addEventListener('click', () => {
+    const code = document.getElementById('apiKeySnippetCode');
+    if (code) code.textContent = code.textContent.replace(/\/\/ model: .*/,
+      "// model: 'auto' (tự chọn 31B/26B) | 'gemma-4-31b-it' | 'gemma-4-26b-a4b-it' | 'thinking' (31B + bật thinking)");
+  });
 
   // ---------- Tạo ảnh: thêm lựa chọn Nano Banana 2 Lite (gemini-3.1-flash-lite-image) ----------
   // Lưu ý: model này KHÔNG có free tier trên Gemini API — key phải bật billing, nếu không sẽ báo lỗi.
