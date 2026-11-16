@@ -1,6 +1,6 @@
 # Velocitix-AI
 - Mở web tại :
-- https://toilalode.github.io
+- https://toilalode.github.io/gemma-4
 
 ## Cài đặt
 
