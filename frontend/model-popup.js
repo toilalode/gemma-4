@@ -146,3 +146,53 @@
 
   window.updateModelPillLabel(); // đồng bộ nhãn ngay khi tải trang
 })();
+
+// ===================== GEMMA 4 (thêm mới) =====================
+// Chỉ thay: danh sách model + system prompt. Mọi thứ khác (worker dùng chung my-ai-worker, tìm web,
+// Deep Think, lưu hội thoại...) giữ nguyên như bản gốc.
+(() => {
+  'use strict';
+
+  // Tên model theo tài liệu Gemini API: https://ai.google.dev/gemma/docs/core/gemma_on_gemini_api
+  const GEMMA_MODELS = [
+    { value: 'gemma-4-31b-it', label: 'Gemma 4 31B', desc: 'Thông minh nhất, hợp câu hỏi khó và suy luận' },
+    { value: 'gemma-4-26b-a4b-it', label: 'Gemma 4 26B A4B', desc: 'Nhanh hơn (MoE, ~4B tham số hoạt động)' },
+  ];
+
+  // Thay nội dung danh sách tại chỗ để mọi code cũ vẫn dùng đúng mảng MODEL_OPTIONS.
+  MODEL_OPTIONS.splice(0, MODEL_OPTIONS.length, ...GEMMA_MODELS);
+
+  // Model đã lưu từ bản cũ (auto, gemini-*) không còn trong danh sách -> về Gemma 4 31B.
+  if (!GEMMA_MODELS.some(m => m.value === state.model)) {
+    state.model = GEMMA_MODELS[0].value;
+    localStorage.setItem('myai_model', state.model);
+  }
+
+  document.title = 'Gemma 4 Chat';
+
+  function buildSystemPrompt(tutorMode) {
+    const today = new Date().toLocaleDateString('vi-VN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+    const parts = [
+      'Bạn là Gemma 4, một trợ lý AI hữu ích, trung thực và chu đáo. Hôm nay là ' + today + '.',
+      'Trả lời bằng ngôn ngữ người dùng đang dùng (mặc định tiếng Việt). Đi thẳng vào câu trả lời, giọng tự nhiên, ấm áp, không dài dòng.',
+      'Câu hỏi đơn giản thì trả lời ngắn. Chỉ dùng danh sách, bảng hay tiêu đề khi nội dung thật sự nhiều phần; code luôn đặt trong khối code có ghi ngôn ngữ.',
+      'Nếu không chắc hoặc không biết thì nói rõ, không bịa số liệu, nguồn hay trích dẫn. Nếu câu hỏi mơ hồ, hãy nêu giả định hợp lý rồi trả lời, hoặc hỏi lại đúng một câu.',
+      'Khi có kết quả tìm kiếm web, ưu tiên thông tin mới nhất, nêu rõ nguồn, và nói rõ khi các nguồn mâu thuẫn nhau.',
+      'Từ chối nhẹ nhàng các yêu cầu gây hại hoặc vi phạm pháp luật và đề xuất hướng an toàn thay thế.',
+    ];
+    if (tutorMode) parts.push('Đang ở chế độ gia sư: giải thích từng bước, chỉ cách tư duy, rồi mới chốt đáp án cuối cùng.');
+    return parts.join('\n');
+  }
+
+  // Bọc streamPost một lần nữa (ngoài lớp thêm thinkingEffort ở trên): thay system prompt cũ bằng prompt mới.
+  const prevStreamPost = window.streamPost;
+  window.streamPost = function (url, payload, handlers, abortSignal) {
+    if (payload && typeof url === 'string' && url.includes('/api/chat/stream')) {
+      const tutor = /gia sư/i.test(payload.systemInstruction || '');
+      payload = { ...payload, systemInstruction: buildSystemPrompt(tutor) };
+    }
+    return prevStreamPost.call(this, url, payload, handlers, abortSignal);
+  };
+
+  window.updateModelPillLabel(); // cập nhật nhãn model trên ô nhập
+})();
