@@ -1,4 +1,4 @@
-// ===================== CẤU HÌNH BACKEND =====================
+// ==================== CẤU HÌNH BACKEND =====================
 // PHẢI khai báo ở đầu file (trước mọi đoạn code dùng tới) — vì các biến const/let trong JS
 // không thể truy cập trước khi dòng khai báo của chúng được chạy (Temporal Dead Zone), dù
 // hàm sử dụng chúng nằm ở phía dưới. Đặt ở cuối file từng gây lỗi cứng "Cannot access
