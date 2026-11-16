@@ -104,8 +104,8 @@
 })();
 
 // ===================== GEMMA 4 =====================
-// Chỉ thay: danh sách model + Auto + system prompt. Mọi thứ khác (worker dùng chung my-ai-worker,
-// tìm web, thinking, lưu hội thoại...) giữ nguyên như bản gốc.
+// Chỉ thay: danh sách model + Auto + system prompt + Nano Banana Lite. Mọi thứ khác (worker dùng chung
+// my-ai-worker, tìm web, thinking, lưu hội thoại...) giữ nguyên như bản gốc.
 (() => {
   'use strict';
 
@@ -121,6 +121,10 @@
 
   // Thay nội dung danh sách tại chỗ để mọi code cũ vẫn dùng đúng mảng MODEL_OPTIONS.
   MODEL_OPTIONS.splice(0, MODEL_OPTIONS.length, ...GEMMA_MODELS);
+
+  // Bỏ "3.5 Flash": app.js chỉ chèn lại model coding cho chủ app nếu chưa có model nào trùng value.
+  // Đặt value của nó trùng 'auto' (đã có trong danh sách) thì sẽ không bao giờ bị chèn vào nữa.
+  CODING_MODEL_OPTION.value = 'auto';
 
   // Model đã lưu từ bản cũ (gemini-*) không còn trong danh sách -> về Auto.
   if (!GEMMA_MODELS.some(m => m.value === state.model)) {
@@ -180,6 +184,36 @@
       }
     }
     return prevStreamPost.call(this, url, payload, handlers, abortSignal);
+  };
+
+  // ---------- Tạo ảnh: thêm lựa chọn Nano Banana 2 Lite (gemini-3.1-flash-lite-image) ----------
+  // Lưu ý: model này KHÔNG có free tier trên Gemini API — key phải bật billing, nếu không sẽ báo lỗi.
+  // Cần worker chạy worker/src/entry.js (nhận dấu [[nb-lite]] để đổi sang model Lite).
+  const proToggle = document.getElementById('imgProToggle');
+  const proLabel = proToggle && proToggle.closest('label');
+  if (proLabel) {
+    const liteLabel = document.createElement('label');
+    liteLabel.className = 'toggle-pill';
+    liteLabel.innerHTML = '<input type="checkbox" id="imgLiteToggle" /><span>🍌 Nano Banana Lite</span>';
+    proLabel.after(liteLabel);
+    const liteToggle = liteLabel.querySelector('input');
+    // Pro và Lite loại trừ nhau.
+    liteToggle.addEventListener('change', () => { if (liteToggle.checked) proToggle.checked = false; });
+    proToggle.addEventListener('change', () => { if (proToggle.checked) liteToggle.checked = false; });
+  }
+
+  const prevApiFetch = window.apiFetch;
+  window.apiFetch = function (url, options) {
+    const lite = document.getElementById('imgLiteToggle');
+    if (lite && lite.checked && typeof url === 'string' && url.includes('/api/image/generate') && options && options.body) {
+      try {
+        const b = JSON.parse(options.body);
+        b.pro = false;
+        b.prompt = '[[nb-lite]] ' + (b.prompt || '');
+        options = { ...options, body: JSON.stringify(b) };
+      } catch (e) { /* body không phải JSON -> gửi nguyên */ }
+    }
+    return prevApiFetch.call(this, url, options);
   };
 
   window.updateModelPillLabel(); // cập nhật nhãn model trên ô nhập
