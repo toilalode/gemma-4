@@ -13,8 +13,11 @@
 //     nhận ra dấu đó, bỏ dấu đi và đổi model trong URL sang bản Lite.
 //
 //  3) API key bên ngoài (/api/external/chat): index.js chỉ biết 4 model smart/fast/lite/coding.
-//     Ở đây nhận thêm 4 giá trị: "auto", "gemma-4-31b-it", "gemma-4-26b-a4b-it", "thinking"
-//     (= 31B + bật thinking). Chọn xong, đổi thành model Gemma thật trước khi gọi Gemini.
+//     Ở đây nhận thêm: model = "auto" | "gemma-4-31b-it" | "gemma-4-26b-a4b-it" (hoặc "thinking" =
+//     31B + thinking, giữ cho tương thích), cùng 2 trường tuỳ chọn:
+//       thinking: true         -> bật thinking (dùng được cho CẢ 2 model)
+//       systemPrompt: "..."    -> prompt hệ thống (systemInstruction)
+//     Chọn xong, đổi thành model Gemma thật trước khi gọi Gemini.
 //
 // Lưu ý: Nano Banana 2 Lite KHÔNG có free tier trên Gemini API (cần bật billing cho key).
 import worker, { GeminiProxyDO, GeminiLiveDO } from './index.js';
@@ -26,7 +29,21 @@ const GEMINI_HOST = 'https://generativelanguage.googleapis.com/';
 const M31 = 'gemma-4-31b-it';
 const M26 = 'gemma-4-26b-a4b-it';
 const GEMMA_ALLOWED = [M31, M26];
-const GEMMA_MARK_RE = /^\[\[gemma:([a-z0-9.-]+):([01])\]\]\s?/;
+// [[gemma:<model>:<0|1 thinking>:<system prompt base64url, có thể rỗng>]]
+const GEMMA_MARK_RE = /^\[\[gemma:([a-z0-9.-]+):([01]):([A-Za-z0-9_-]*)\]\]\s?/;
+const MAX_SYSTEM_CHARS = 4000;
+
+function toB64Url(str) {
+  const bytes = new TextEncoder().encode(str);
+  let bin = '';
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+function fromB64Url(b64) {
+  const std = b64.replace(/-/g, '+').replace(/_/g, '/');
+  const bin = atob(std + '='.repeat((4 - (std.length % 4)) % 4));
+  return new TextDecoder().decode(Uint8Array.from(bin, c => c.charCodeAt(0)));
+}
 
 const HARD_HINTS = [
   'code', 'lập trình', 'debug', 'sửa lỗi', 'bug', 'function', 'thuật toán', 'sql', 'regex',
@@ -35,9 +52,9 @@ const HARD_HINTS = [
   'phân tích', 'so sánh', 'giải thích', 'lý luận', 'đánh giá', 'chiến lược', 'nghiên cứu', 'tại sao', 'vì sao',
   'bài tập', 'bài toán', 'kế hoạch', 'viết bài', 'viết luận', 'tóm tắt',
 ];
-function pickAuto(prompt) {
+function pickAuto(prompt, thinking) {
   const t = (prompt || '').toLowerCase();
-  if (t.length > 300 || t.includes('```') || HARD_HINTS.some(k => t.includes(k))) return M31;
+  if (thinking || t.length > 300 || t.includes('```') || HARD_HINTS.some(k => t.includes(k))) return M31;
   return M26;
 }
 
@@ -60,12 +77,15 @@ async function patchGeminiRequest(req) {
   const first = body?.contents?.[0]?.parts?.[0];
   const firstText = first && typeof first.text === 'string' ? first.text : '';
 
-  // (3) /api/external/chat: dấu [[gemma:<model>:<0|1>]] do wrapper bên dưới gắn vào prompt.
+  // (3) /api/external/chat: dấu do wrapper bên dưới gắn vào prompt.
   const mk = isPlainGenerate ? GEMMA_MARK_RE.exec(firstText) : null;
   if (mk && GEMMA_ALLOWED.includes(mk[1])) {
     first.text = firstText.slice(mk[0].length);
     url = url.replace(`/models/${model}:`, `/models/${mk[1]}:`);
     if (mk[2] === '1') body.generationConfig = { ...(body.generationConfig || {}), thinkingConfig: { thinkingLevel: 'high' } };
+    if (mk[3]) {
+      try { body.systemInstruction = { parts: [{ text: fromB64Url(mk[3]) }] }; } catch { /* bỏ qua prompt hệ thống lỗi */ }
+    }
     changed = true;
   } else if (isGemma) {
     // (1) chat: thinkingBudget -> thinkingLevel
@@ -111,14 +131,16 @@ export default {
       if (request.method === 'POST' && u.pathname === '/api/external/chat') {
         const body = await request.clone().json().catch(() => null);
         if (body && typeof body.prompt === 'string' && EXTERNAL_VALUES.includes(body.model)) {
-          const target = body.model === 'auto' ? pickAuto(body.prompt) : body.model === 'thinking' ? M31 : body.model;
-          const think = body.model === 'thinking' ? '1' : '0';
+          const think = body.model === 'thinking' || body.thinking === true;
+          const target = body.model === 'auto' ? pickAuto(body.prompt, think) : body.model === 'thinking' ? M31 : body.model;
+          const sys = typeof body.systemPrompt === 'string' ? body.systemPrompt.trim().slice(0, MAX_SYSTEM_CHARS) : '';
           const headers = new Headers(request.headers);
           headers.delete('content-length');
+          const { systemPrompt, thinking, ...rest } = body;
           request = new Request(request.url, {
             method: 'POST',
             headers,
-            body: JSON.stringify({ ...body, model: 'smart', prompt: `[[gemma:${target}:${think}]] ${body.prompt}` }),
+            body: JSON.stringify({ ...rest, model: 'smart', prompt: `[[gemma:${target}:${think ? 1 : 0}:${sys ? toB64Url(sys) : ''}]] ${body.prompt}` }),
           });
         }
       }
