@@ -104,27 +104,49 @@
 })();
 
 // ===================== GEMMA 4 =====================
-// Chỉ thay: danh sách model + system prompt. Mọi thứ khác (worker dùng chung my-ai-worker, tìm web,
-// thinking, lưu hội thoại...) giữ nguyên như bản gốc.
+// Chỉ thay: danh sách model + Auto + system prompt. Mọi thứ khác (worker dùng chung my-ai-worker,
+// tìm web, thinking, lưu hội thoại...) giữ nguyên như bản gốc.
 (() => {
   'use strict';
 
+  const M31 = 'gemma-4-31b-it';       // thông minh nhất
+  const M26 = 'gemma-4-26b-a4b-it';   // nhanh hơn (MoE, ~4B tham số hoạt động)
+
   // Tên model theo tài liệu Gemini API: https://ai.google.dev/gemma/docs/core/gemma_on_gemini_api
   const GEMMA_MODELS = [
-    { value: 'gemma-4-31b-it', label: 'Gemma 4 31B', desc: 'Thông minh nhất, hợp câu hỏi khó và suy luận' },
-    { value: 'gemma-4-26b-a4b-it', label: 'Gemma 4 26B A4B', desc: 'Nhanh hơn (MoE, ~4B tham số hoạt động)' },
+    { value: 'auto', label: '⚡ Auto', desc: 'Tự chọn giữa Gemma 4 31B và 26B tuỳ theo từng câu hỏi' },
+    { value: M31, label: 'Gemma 4 31B', desc: 'Thông minh nhất, hợp câu hỏi khó và suy luận' },
+    { value: M26, label: 'Gemma 4 26B A4B', desc: 'Nhanh hơn, hợp câu hỏi đơn giản' },
   ];
 
   // Thay nội dung danh sách tại chỗ để mọi code cũ vẫn dùng đúng mảng MODEL_OPTIONS.
   MODEL_OPTIONS.splice(0, MODEL_OPTIONS.length, ...GEMMA_MODELS);
 
-  // Model đã lưu từ bản cũ (auto, gemini-*) không còn trong danh sách -> về Gemma 4 31B.
+  // Model đã lưu từ bản cũ (gemini-*) không còn trong danh sách -> về Auto.
   if (!GEMMA_MODELS.some(m => m.value === state.model)) {
-    state.model = GEMMA_MODELS[0].value;
+    state.model = 'auto';
     localStorage.setItem('myai_model', state.model);
   }
 
   document.title = 'Gemma 4 Chat';
+
+  // ---------- Auto: chọn 31B hay 26B theo câu hỏi ----------
+  // Câu khó (code, toán, phân tích, dài, có file đính kèm, bật tìm web hoặc thinking) -> 31B.
+  // Câu ngắn, đơn giản (chào hỏi, hỏi nhanh, dịch ngắn...) -> 26B cho nhanh.
+  const HARD_HINTS = [
+    'code', 'lập trình', 'debug', 'sửa lỗi', 'bug', 'function', 'hàm ', 'thuật toán', 'sql', 'regex',
+    'html', 'css', 'javascript', 'python', 'java', 'c++', 'api', 'json', 'script',
+    'toán', 'giải phương trình', 'chứng minh', 'tính ', 'đạo hàm', 'tích phân', 'xác suất',
+    'phân tích', 'so sánh', 'giải thích', 'lý luận', 'đánh giá', 'chiến lược', 'nghiên cứu', 'tại sao', 'vì sao',
+    'bài tập', 'bài toán', 'kế hoạch', 'viết bài', 'viết luận', 'tóm tắt', 'dịch bài',
+  ];
+  function pickAutoModel(text, { webSearch, thinking, hasFiles }) {
+    const t = (text || '').toLowerCase();
+    if (hasFiles || webSearch || thinking) return M31;
+    if (t.length > 300 || t.includes('```')) return M31;
+    if (HARD_HINTS.some(k => t.includes(k))) return M31;
+    return M26;
+  }
 
   function buildSystemPrompt(tutorMode) {
     const today = new Date().toLocaleDateString('vi-VN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
@@ -140,12 +162,22 @@
     return parts.join('\n');
   }
 
-  // Bọc streamPost: thay system prompt cũ bằng prompt mới.
+  // Bọc streamPost: thay system prompt cũ bằng prompt mới, và đổi 'auto' thành model Gemma cụ thể
+  // (worker gốc chỉ biết Auto của Gemini nên phải chọn ở đây trước khi gửi).
   const prevStreamPost = window.streamPost;
   window.streamPost = function (url, payload, handlers, abortSignal) {
     if (payload && typeof url === 'string' && url.includes('/api/chat/stream')) {
       const tutor = /gia sư/i.test(payload.systemInstruction || '');
       payload = { ...payload, systemInstruction: buildSystemPrompt(tutor) };
+      if (payload.model === 'auto') {
+        const lastUser = [...(payload.messages || [])].reverse().find(m => m.role === 'user');
+        const text = (lastUser?.parts || []).map(p => p.text || '').join(' ');
+        payload.model = pickAutoModel(text, {
+          webSearch: !!payload.webSearch,
+          thinking: !!payload.thinking,
+          hasFiles: !!(payload.attachments && payload.attachments.length),
+        });
+      }
     }
     return prevStreamPost.call(this, url, payload, handlers, abortSignal);
   };
