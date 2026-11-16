@@ -186,24 +186,63 @@
     return prevStreamPost.call(this, url, payload, handlers, abortSignal);
   };
 
-  // ---------- Cài đặt > "Thử gọi API bằng key": thay 4 model cũ bằng Auto, 2 model Gemma, thinking ----------
-  // Worker (entry.js) nhận 4 giá trị này cho /api/external/chat.
+  // ---------- Cài đặt > "Thử gọi API bằng key" ----------
+  // Model: Auto / Gemma 4 31B / Gemma 4 26B. Thinking là công tắc riêng (dùng được cho cả 2 model).
+  // Có thêm ô "Prompt hệ thống". Worker (entry.js) nhận thêm 2 trường `thinking` và `systemPrompt`.
   const apiSel = document.getElementById('apiKeyTestModel');
   if (apiSel) {
     apiSel.innerHTML =
       '<option value="auto">Auto (tự chọn 31B / 26B)</option>' +
       '<option value="gemma-4-31b-it">Gemma 4 31B</option>' +
       '<option value="gemma-4-26b-a4b-it">Gemma 4 26B A4B</option>' +
-      '<option value="thinking">Gemma 4 31B + bật thinking</option>' +
       // Option "coding" ẩn: app.js thấy đã có thì không chèn thêm lựa chọn Coding cho chủ app.
       '<option value="coding" hidden disabled></option>';
     apiSel.value = 'auto';
+    apiSel.insertAdjacentHTML('afterend',
+      '<label class="toggle-pill" style="margin-top:8px"><input type="checkbox" id="apiKeyTestThinking" /><span>⚡ Bật thinking</span></label>' +
+      '<label class="hint" for="apiKeyTestSystem" style="margin-top:8px;display:block">Prompt hệ thống (tuỳ chọn)</label>' +
+      '<textarea id="apiKeyTestSystem" rows="2" style="width:100%;margin-top:4px" placeholder="VD: Bạn là trợ lý dịch thuật, chỉ trả lời bằng tiếng Anh..."></textarea>');
   }
-  // Sửa dòng chú thích model trong đoạn code xuất ra (app.js tạo sẵn, nhắc 3 model cũ).
+
+  // Thêm thinking + prompt hệ thống vào request "Gửi thử" (app.js tự dựng body chỉ có prompt và model).
+  const prevFetch = window.fetch.bind(window);
+  window.fetch = function (input, init) {
+    try {
+      const url = typeof input === 'string' ? input : input && input.url;
+      if (url && url.includes('/api/external/chat') && init && typeof init.body === 'string') {
+        const b = JSON.parse(init.body);
+        b.thinking = !!document.getElementById('apiKeyTestThinking')?.checked;
+        const sys = document.getElementById('apiKeyTestSystem')?.value?.trim();
+        if (sys) b.systemPrompt = sys;
+        init = { ...init, body: JSON.stringify(b) };
+      }
+    } catch (e) { /* không phải JSON -> gửi nguyên */ }
+    return prevFetch(input, init);
+  };
+
+  // Đoạn code xuất ra: viết lại để có thinking + prompt hệ thống (app.js tạo sẵn bản cũ chỉ có prompt, model).
   document.getElementById('apiKeyGenSnippetBtn')?.addEventListener('click', () => {
     const code = document.getElementById('apiKeySnippetCode');
-    if (code) code.textContent = code.textContent.replace(/\/\/ model: .*/,
-      "// model: 'auto' (tự chọn 31B/26B) | 'gemma-4-31b-it' | 'gemma-4-26b-a4b-it' | 'thinking' (31B + bật thinking)");
+    const apiKey = document.getElementById('apiKeyDisplay')?.value?.trim();
+    if (!code || !apiKey) return;
+    const model = apiSel?.value === 'coding' ? 'auto' : (apiSel?.value || 'auto');
+    const thinking = !!document.getElementById('apiKeyTestThinking')?.checked;
+    const sys = (document.getElementById('apiKeyTestSystem')?.value || '').trim().replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$\{/g, '\\${');
+    code.textContent =
+`<script>
+async function askGemma(prompt, { model = '${model}', thinking = ${thinking}, systemPrompt = \`${sys}\` } = {}) {
+  const r = await fetch('${API_BASE}/api/external/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-api-key': '${apiKey}' },
+    body: JSON.stringify({ prompt, model, thinking, systemPrompt })
+  });
+  const data = await r.json();
+  if (!r.ok) throw new Error(data.error || 'Lỗi gọi API');
+  return data.text;
+}
+// model: 'auto' (tự chọn 31B/26B) | 'gemma-4-31b-it' | 'gemma-4-26b-a4b-it'
+// thinking: true/false (dùng được cho cả 2 model) — systemPrompt: prompt hệ thống (tuỳ chọn)
+<\\/script>`;
   });
 
   // ---------- Tạo ảnh: thêm lựa chọn Nano Banana 2 Lite (gemini-3.1-flash-lite-image) ----------
