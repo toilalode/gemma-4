@@ -26,6 +26,9 @@
 //     Thành công thì response có header x-gemma-fallback cho biết đã bỏ đến bước nào. Nếu vẫn lỗi,
 //     thông báo lỗi được thêm đuôi "[đã thử: ...]" ghi mã trạng thái từng lần để dễ tìm nguyên nhân.
 //
+//  5) Bỏ giới hạn "3 request/phút" của /api/external/chat (index.js đếm bằng KV key
+//     "ratelimit:ext:<apiKey>:min"). Giới hạn 200 request/ngày vẫn giữ nguyên. Các route khác không đổi.
+//
 // Lưu ý: Nano Banana 2 Lite KHÔNG có free tier trên Gemini API (cần bật billing cho key).
 import worker, { GeminiProxyDO, GeminiLiveDO } from './index.js';
 
@@ -219,6 +222,27 @@ globalThis.fetch = async (input, init) => {
   }
 };
 
+// (5) Bỏ giới hạn 3 request/phút của /api/external/chat: đưa cho index.js một bản env có KV "bọc",
+// trong đó key đếm "ratelimit:ext:<key>:min" luôn đọc ra rỗng và không bị ghi. Mọi key KV khác y như cũ.
+const isExtMinuteKey = (k) => typeof k === 'string' && k.startsWith('ratelimit:ext:') && k.endsWith(':min');
+function envWithoutExtMinuteLimit(env) {
+  const kv = env.MY_AI_KV;
+  if (!kv) return env;
+  const kvProxy = new Proxy(kv, {
+    get(target, prop) {
+      if (prop === 'get') return (k, ...a) => (isExtMinuteKey(k) ? Promise.resolve(null) : target.get(k, ...a));
+      if (prop === 'put') return (k, ...a) => (isExtMinuteKey(k) ? Promise.resolve() : target.put(k, ...a));
+      const v = target[prop];
+      return typeof v === 'function' ? v.bind(target) : v;
+    },
+  });
+  return new Proxy(env, {
+    get(target, prop) {
+      return prop === 'MY_AI_KV' ? kvProxy : Reflect.get(target, prop);
+    },
+  });
+}
+
 // (3) Bọc worker.fetch: đổi model "auto" / gemma / "thinking" của /api/external/chat thành "smart" +
 // dấu trong prompt, để index.js (không biết các giá trị này) vẫn chạy bình thường; fetch bọc ở trên
 // sẽ đổi sang model Gemma thật.
@@ -229,6 +253,7 @@ export default {
     try {
       const u = new URL(request.url);
       if (request.method === 'POST' && u.pathname === '/api/external/chat') {
+        env = envWithoutExtMinuteLimit(env); // (5)
         const body = await request.clone().json().catch(() => null);
         if (body && typeof body.prompt === 'string' && EXTERNAL_VALUES.includes(body.model)) {
           const think = body.model === 'thinking' || body.thinking === true;
