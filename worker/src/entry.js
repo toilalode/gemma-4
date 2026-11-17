@@ -19,10 +19,12 @@
 //       systemPrompt: "..."    -> prompt hệ thống (systemInstruction)
 //     Chọn xong, đổi thành model Gemma thật trước khi gọi Gemini.
 //
-//  4) Gemma hay trả lỗi 500 "Internal error encountered" (hoặc 400) khi request có tính năng nó không
-//     xử lý được. Khi đó tự thử lại, mỗi lần bỏ bớt dần: thinking -> tìm web -> prompt hệ thống (gộp vào
-//     tin nhắn đầu), cuối cùng thử model Gemma còn lại. Response có header x-gemma-fallback cho biết
-//     đã phải bỏ đến bước nào (vd "no-thinking+no-tools").
+//  4) Gemma hay trả lỗi 500 "Internal error encountered" (hoặc 400). Khi đó:
+//       a) thử lại NGUYÊN request tối đa 2 lần (lỗi 500 INTERNAL của Google thường chỉ là tạm thời);
+//       b) rồi mỗi lần bỏ bớt dần: thinking -> tìm web -> prompt hệ thống (gộp vào tin nhắn đầu);
+//       c) cuối cùng thử model Gemma còn lại.
+//     Thành công thì response có header x-gemma-fallback cho biết đã bỏ đến bước nào. Nếu vẫn lỗi,
+//     thông báo lỗi được thêm đuôi "[đã thử: ...]" ghi mã trạng thái từng lần để dễ tìm nguyên nhân.
 //
 // Lưu ý: Nano Banana 2 Lite KHÔNG có free tier trên Gemini API (cần bật billing cho key).
 import worker, { GeminiProxyDO, GeminiLiveDO } from './index.js';
@@ -110,9 +112,24 @@ async function patchGeminiRequest(req) {
   return new Request(url, { method: 'POST', headers: req.headers, body: JSON.stringify(body) });
 }
 
-// (4) Gọi Gemma, nếu lỗi 5xx (hoặc 400 không phải do API key) thì thử lại với request đơn giản hơn.
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+// Thêm đuôi "[đã thử: ...]" vào message lỗi JSON của Google (nếu parse được) để biết từng lần trả gì.
+async function annotateError(res, log) {
+  const text = await res.clone().text().catch(() => '');
+  try {
+    const data = JSON.parse(text);
+    if (data && data.error && typeof data.error.message === 'string') {
+      data.error.message += ` [đã thử: ${log.join(', ')}]`;
+      return new Response(JSON.stringify(data), { status: res.status, headers: { 'Content-Type': 'application/json' } });
+    }
+  } catch { /* không phải JSON -> trả nguyên */ }
+  return res;
+}
+
+// (4) Gọi Gemma; lỗi 5xx (hoặc 400 không phải do API key) thì thử lại rồi đơn giản hoá request.
 async function gemmaFetchWithFallback(req) {
-  const firstRes = await originalFetch(req.clone());
+  const log = [];
   const shouldRetry = async (res) => {
     if (res.status >= 500) return true;
     if (res.status === 400) {
@@ -121,10 +138,28 @@ async function gemmaFetchWithFallback(req) {
     }
     return false;
   };
+  const tag = (res, label) => {
+    const out = new Response(res.body, res);
+    out.headers.set('x-gemma-fallback', label);
+    return out;
+  };
+
+  const firstRes = await originalFetch(req.clone());
+  log.push(`lần đầu:${firstRes.status}`);
   if (!(await shouldRetry(firstRes))) return firstRes;
 
+  // a) lỗi 5xx của Google thường chỉ là tạm thời -> thử lại nguyên request.
+  if (firstRes.status >= 500) {
+    for (let i = 1; i <= 2; i++) {
+      await sleep(400 * i);
+      const res = await originalFetch(req.clone());
+      log.push(`thử lại ${i}:${res.status}`);
+      if (!(await shouldRetry(res))) return tag(res, `retry${i}`);
+    }
+  }
+
   let body;
-  try { body = await req.clone().json(); } catch { return firstRes; }
+  try { body = await req.clone().json(); } catch { return annotateError(firstRes, log); }
 
   const withoutThinking = (b) => {
     if (b.generationConfig) {
@@ -139,35 +174,33 @@ async function gemmaFetchWithFallback(req) {
     if (sys && p0 && typeof p0.text === 'string') p0.text = `${sys}\n\n${p0.text}`;
   };
 
+  // b) bỏ dần từng tính năng (cộng dồn).
   const steps = [];
-  if (body.generationConfig?.thinkingConfig) steps.push(['no-thinking', (b) => withoutThinking(b)]);
+  if (body.generationConfig?.thinkingConfig) steps.push(['no-thinking', withoutThinking]);
   if (body.tools) steps.push(['no-tools', (b) => { delete b.tools; }]);
-  if (body.systemInstruction) steps.push(['no-system', (b) => foldSystem(b)]);
+  if (body.systemInstruction) steps.push(['no-system', foldSystem]);
 
   const cur = structuredClone(body);
   const applied = [];
   const send = (b, url) => originalFetch(new Request(url, { method: 'POST', headers: req.headers, body: JSON.stringify(b) }));
-  const tag = (res, label) => {
-    const out = new Response(res.body, res);
-    out.headers.set('x-gemma-fallback', label);
-    return out;
-  };
 
   for (const [label, fn] of steps) {
     fn(cur);
     applied.push(label);
     const res = await send(cur, req.url);
+    log.push(`${applied.join('+')}:${res.status}`);
     if (!(await shouldRetry(res))) return tag(res, applied.join('+'));
   }
 
-  // Cuối cùng: thử model Gemma còn lại với request đã đơn giản hoá.
+  // c) cuối cùng: thử model Gemma còn lại với request đã đơn giản hoá.
   const mm = /\/models\/(gemma-[^:/?]+):/.exec(req.url);
   if (mm) {
     const other = mm[1] === M31 ? M26 : M31;
     const res = await send(cur, req.url.replace(`/models/${mm[1]}:`, `/models/${other}:`));
+    log.push(`${[...applied, 'đổi model'].join('+')}:${res.status}`);
     if (!(await shouldRetry(res))) return tag(res, [...applied, 'other-model'].join('+'));
   }
-  return firstRes; // vẫn lỗi -> trả đúng lỗi ban đầu để người dùng thấy nguyên nhân thật
+  return annotateError(firstRes, log); // vẫn lỗi -> trả lỗi ban đầu kèm lịch sử các lần thử
 }
 
 // Bọc fetch toàn cục (chạy cả trong Worker lẫn Durable Object GeminiProxyDO vì cùng nạp file này).
